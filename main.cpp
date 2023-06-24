@@ -6,84 +6,44 @@
 #include <sys/stat.h>
 #include <syslog.h>
 
+// Usual socket headers
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+#include <arpa/inet.h>
+
 #include <iostream>
 #include <fstream>
 #include <thread>
 #include <mutex>
 
+#define SIZE 1024
+#define BACKLOG 10  // Passed to listen()
+
 using namespace std;
-
-
-namespace
-{
-//fstream logfile("final.log", ios::out);
-}
-
 
 #define LOG(msg) \
 	{ \
-    fstream("final.log", ios::out) << __FILE__ << "(" << __LINE__ << "): " << msg << std::endl; \
+        std::lock_guard guard(m_logfileMutex); \
+        m_logfile << "[TID=" << std::this_thread::get_id() << "] " << __FILE__ << "(" << __LINE__ << "):" << msg << std::endl; \
 	}
 
-/*
- * daemonize.c
- * This example daemonizes a process, writes a few log messages,
- * sleeps 20 seconds and terminates afterwards.
- */
-
-
-static void skeleton_daemon()
+class Server
 {
-    pid_t pid;
-
-    /* Fork off the parent process */
-    pid = fork();
-
-    /* An error occurred */
-    if (pid < 0)
-        exit(EXIT_FAILURE);
-
-    /* Success: Let the parent terminate */
-    if (pid > 0)
-        exit(EXIT_SUCCESS);
-
-    /* On success: The child process becomes session leader */
-    if (setsid() < 0)
-        exit(EXIT_FAILURE);
-
-    /* Catch, ignore and handle signals */
-    //TODO: Implement a working signal handler */
-    signal(SIGCHLD, SIG_IGN);
-    signal(SIGHUP, SIG_IGN);
-
-    /* Fork off for the second time*/
-    pid = fork();
-
-    /* An error occurred */
-    if (pid < 0)
-        exit(EXIT_FAILURE);
-
-    /* Success: Let the parent terminate */
-    if (pid > 0)
-        exit(EXIT_SUCCESS);
-
-    /* Set new file permissions */
-    umask(0);
-
-    /* Change the working directory to the root directory */
-    /* or another appropriated directory */
-    chdir("/");
-
-    /* Close all open file descriptors */
-    int x;
-    for (x = sysconf(_SC_OPEN_MAX); x>=0; x--)
+public:
+    Server(std::string ip, uint16_t port, std::string dir)
     {
-        close (x);
+        m_logfile.open("final.log", ios::out);
+	    LOG(ip << " " << port << " " << dir << " Ok\n");
     }
 
-    /* Open the log file */
-    LOG("firstdaemon " << LOG_PID << " " << LOG_DAEMON);
-}
+    void startServerMain(std::string host, uint16_t port, std::string);
+
+private:
+    fstream m_logfile;
+    std::mutex m_logfileMutex; 
+};
 
 int main(int argc, char **argv)
 {
@@ -102,19 +62,62 @@ int main(int argc, char **argv)
 		}
 	}
 
-	LOG(ip << " " << port << " " << dir << " Ok\n");
-
-	skeleton_daemon();
-
-	while (1)
+    if (daemon(1, 1))
     {
-        //TODO: Insert daemon code here.
-        //LOG(LOG_NOTICE << " First daemon started.");
-        sleep (10);
-        break;
+        return EXIT_FAILURE;
     }
 
-    //LOG(LOG_NOTICE << " First daemon terminated.");
+    Server s(ip, port, dir);
+
+    s.startServerMain(ip, port, dir);
 
     return EXIT_SUCCESS;
+}
+
+void Server::startServerMain(std::string host, uint16_t port, std::string)
+{
+    // Socket setup: creates an endpoint for communication, returns a descriptor
+    // -----------------------------------------------------------------------------------------------------------------
+    int serverSocket = socket(
+        AF_INET,      // Domain: specifies protocol family
+        SOCK_STREAM,  // Type: specifies communication semantics
+        0             // Protocol: 0 because there is a single protocol for the specified family
+    );
+
+    // Construct local address structure
+    // -----------------------------------------------------------------------------------------------------------------
+    struct sockaddr_in serverAddress;
+    serverAddress.sin_family = AF_INET;
+    serverAddress.sin_port = htons(port);
+    serverAddress.sin_addr.s_addr = inet_addr(host.c_str()); //htonl(host.c_str());//
+
+    // Bind socket to local address
+    // -----------------------------------------------------------------------------------------------------------------
+    // bind() assigns the address specified by serverAddress to the socket
+    // referred to by the file descriptor serverSocket.
+    bind(
+        serverSocket,                         // file descriptor referring to a socket
+        (struct sockaddr *) &serverAddress,   // Address to be assigned to the socket
+        sizeof(serverAddress)                 // Size (bytes) of the address structure
+    );
+
+    // Mark socket to listen for incoming connections
+    // -----------------------------------------------------------------------------------------------------------------
+    int listening = listen(serverSocket, BACKLOG);
+    if (listening < 0) {
+        //LOG("Error: The server is not listening.\n");
+        return;
+    }
+
+    //report(&serverAddress);     // Custom report function
+    //setHttpHeader(httpHeader);  // Custom function to set header
+    int clientSocket;
+
+        // Wait for a connection, create a connected socket if a connection is pending
+    // -----------------------------------------------------------------------------------------------------------------
+    while(1) {
+        clientSocket = accept(serverSocket, NULL, NULL);
+        //send(clientSocket, httpHeader, sizeof(httpHeader), 0);
+        close(clientSocket);
+    }
 }
