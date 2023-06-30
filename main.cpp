@@ -17,6 +17,10 @@
 #include <fstream>
 #include <thread>
 #include <mutex>
+#include <functional>
+#include <cstring>
+#include <sstream>
+#include <iterator>
 
 #define SIZE 1024
 #define BACKLOG 10  // Passed to listen()
@@ -38,11 +42,15 @@ public:
 	    LOG(ip << " " << port << " " << dir << " Ok\n");
     }
 
-    void startServerMain(std::string host, uint16_t port, std::string);
+    void startServerMain(std::string host, uint16_t port, const std::string& dir);
 
 private:
+    void readClientRequest(int socket);
+
     fstream m_logfile;
     std::mutex m_logfileMutex; 
+
+    std::string m_dir;
 };
 
 int main(int argc, char **argv)
@@ -74,8 +82,10 @@ int main(int argc, char **argv)
     return EXIT_SUCCESS;
 }
 
-void Server::startServerMain(std::string host, uint16_t port, std::string)
+void Server::startServerMain(std::string host, uint16_t port, const std::string& dir)
 {
+    m_dir = dir;
+
     // Socket setup: creates an endpoint for communication, returns a descriptor
     // -----------------------------------------------------------------------------------------------------------------
     int serverSocket = socket(
@@ -105,19 +115,118 @@ void Server::startServerMain(std::string host, uint16_t port, std::string)
     // -----------------------------------------------------------------------------------------------------------------
     int listening = listen(serverSocket, BACKLOG);
     if (listening < 0) {
-        //LOG("Error: The server is not listening.\n");
+        LOG("Error: The server is not listening.\n");
         return;
     }
 
     //report(&serverAddress);     // Custom report function
     //setHttpHeader(httpHeader);  // Custom function to set header
-    int clientSocket;
+    int clientFd;
 
-        // Wait for a connection, create a connected socket if a connection is pending
+    // Wait for a connection, create a connected socket if a connection is pending
     // -----------------------------------------------------------------------------------------------------------------
     while(1) {
-        clientSocket = accept(serverSocket, NULL, NULL);
-        //send(clientSocket, httpHeader, sizeof(httpHeader), 0);
-        close(clientSocket);
+        struct sockaddr client_addr;
+        socklen_t address_len;
+        clientFd = accept(serverSocket, (struct sockaddr *)&client_addr, &address_len);
+        if (clientFd < 0)
+        {
+            LOG("accept() error");
+        }
+        else
+        {
+            char str[INET_ADDRSTRLEN];
+            struct sockaddr_in* pV4Addr = (struct sockaddr_in*)&client_addr;
+            struct in_addr ipAddr = pV4Addr->sin_addr;
+            inet_ntop( AF_INET, &ipAddr, str, INET_ADDRSTRLEN );
+
+            LOG("A new client with fd=" << clientFd << " has addr " << str << ":" << pV4Addr->sin_port);
+
+            std::thread(std::bind(&Server::readClientRequest, this, clientFd)).detach();
+        }
     }
+}
+
+void Server::readClientRequest(int clientFd)
+{
+    LOG("start processing a client with socket " << clientFd);
+    int rcvd;
+    auto* buf = new char[65535];
+    rcvd=recv(clientFd, buf, 65535, 0);
+
+    if (rcvd<0)    // receive error
+    {
+        LOG("recv() error\n");
+    }
+    else if (rcvd==0)    // receive socket closed
+    {
+        LOG("Client disconnected unexpectenly.\n");
+    }
+    else    // message received
+    {
+        buf[rcvd] = '\0';
+
+        LOG("recv a request from the client[" << clientFd << "] '\n" << buf << "'");
+
+        auto method = strtok(buf,  " \t\r\n");
+        char* tmpUri    = strtok(NULL, " \t");
+        std::string uri = tmpUri[0] == '/'
+            ? (std::string(tmpUri + 1, strlen(tmpUri) - 1))
+            : (std::string(tmpUri, strlen(tmpUri)));
+
+        LOG("method determined as " << method << " and requested file " << uri);
+
+        std::stringstream httpHeaderResponse;
+
+        std::ifstream file(m_dir + uri, std::ios::binary);
+        if (!file.is_open()) {
+            LOG("Failed to open a file: " << m_dir + uri); 
+
+            const std::string content = "The requested file was not found on this server.";
+            httpHeaderResponse << "HTTP/1.0 404 Not Found\r\n"
+                << "Content-Type: text/plain\r\n"
+                << "Content-Length: " << content.size() << "\r\n\r\n"
+                <<  content;
+        }
+        else
+        {
+            httpHeaderResponse << "HTTP/1.0 200 OK\r\n"
+                << "Content-Type: text/html\r\n";
+        }
+
+        httpHeaderResponse.seekg(0, std::ios::end);
+        auto len = httpHeaderResponse.tellg();
+        httpHeaderResponse.seekg(0, std::ios::beg);
+        httpHeaderResponse.read(buf, len);
+        LOG("sending buf: " << buf);
+        if (send(clientFd, buf, len, 0) < 0) {
+            LOG("Failed to send data");
+        }
+        else
+        {
+            LOG("Write response with len: " << len);
+        }
+
+        if (file.is_open())
+        {
+            file.seekg(0, std::ios::end);
+            int size = file.tellg();
+            file.seekg(0, std::ios::beg);
+            file.read(buf, size);
+            file.close();
+
+            httpHeaderResponse.str("");
+            httpHeaderResponse.clear();
+            httpHeaderResponse << "Content-Length: " << size << "\r\n\r\n";
+            std::string tmp = httpHeaderResponse.str();
+            send(clientFd, tmp.data(), tmp.size(), 0);
+            
+            send(clientFd, buf, size, 0);
+        }
+    }
+
+    delete[] buf;
+    //Closing SOCKET
+    shutdown(clientFd, SHUT_RDWR);         //All further send and recieve operations are DISABLED...
+    close(clientFd);
 }

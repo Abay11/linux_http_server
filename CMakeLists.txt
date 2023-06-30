@@ -8,3 +8,5 @@ add_executable(final main.cpp)
 
 target_compile_options(final
 	PRIVATE -Wall -Wextra -pedantic -Werror)
+
+target_link_libraries(final PRIVATE -pthread)
