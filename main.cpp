@@ -183,10 +183,9 @@ void Server::readClientRequest(int clientFd)
             LOG("Failed to open a file: " << m_dir + uri); 
 
             const std::string content = "The requested file was not found on this server.";
-            httpHeaderResponse << "HTTP/1.0 404 Not Found\r\n"
-                << "Content-Type: text/plain\r\n"
-                << "Content-Length: " << content.size() << "\r\n\r\n"
-                <<  content;
+            httpHeaderResponse << "HTTP/1.0 404 NOT FOUND\r\n"
+                << "Content-Type: text/html\r\n"
+                << "Content-Length: 0\r\n\r\n";
         }
         else
         {
